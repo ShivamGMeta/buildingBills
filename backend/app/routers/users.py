@@ -23,6 +23,18 @@ def _admin_out(user: User) -> AdminOut:
     return out
 
 
+def _assert_floor_free(db: Session, unit_id: int,
+                       exclude_user_id: int | None = None) -> None:
+    """One ACTIVE tenant per floor. Past (deactivated) tenants may remain in
+    history on the unit. Backed by a partial unique index on users."""
+    q = db.query(User).filter(User.unit_id == unit_id,
+                              User.role == Role.tenant, User.is_active)
+    if exclude_user_id is not None:
+        q = q.filter(User.id != exclude_user_id)
+    if q.first() is not None:
+        raise HTTPException(409, "This floor already has an active tenant")
+
+
 def _set_scopes(db: Session, admin: User, unit_ids: list[int]) -> None:
     units = db.query(Unit).filter(Unit.id.in_(unit_ids)).all() if unit_ids else []
     if len(units) != len(set(unit_ids)):
@@ -82,6 +94,7 @@ def change_role(user_id: int, body: RoleChange, db: Session = Depends(get_db),
     if body.role == Role.tenant:
         if body.unit_id is None:
             raise HTTPException(422, "unit_id required when demoting to tenant")
+        _assert_floor_free(db, body.unit_id, exclude_user_id=user.id)
         user.unit_id = body.unit_id
         user.admin_scopes = []
     else:  # -> admin
@@ -111,6 +124,7 @@ def create_tenant(body: TenantCreate, db: Session = Depends(get_db),
         raise HTTPException(404, "Not found")
     if db.query(User).filter(User.email == body.email.lower()).first():
         raise HTTPException(409, "Email already registered")
+    _assert_floor_free(db, body.unit_id)
     tenant = User(email=body.email.lower(), name=body.name, phone=body.phone,
                   password_hash=hash_password(body.password),
                   role=Role.tenant, unit_id=body.unit_id)
@@ -129,7 +143,11 @@ def update_tenant(tenant_id: int, body: TenantUpdate, db: Session = Depends(get_
     check_unit_access(user, tenant.unit_id, db)
     if body.unit_id is not None:
         check_unit_access(user, body.unit_id, db)
+        if body.unit_id != tenant.unit_id:
+            _assert_floor_free(db, body.unit_id, exclude_user_id=tenant.id)
         tenant.unit_id = body.unit_id
+    if body.is_active is True and not tenant.is_active and tenant.unit_id:
+        _assert_floor_free(db, tenant.unit_id, exclude_user_id=tenant.id)
     for f in ("name", "phone", "is_active"):
         v = getattr(body, f)
         if v is not None:

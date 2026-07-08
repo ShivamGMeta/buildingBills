@@ -1,7 +1,7 @@
 import './style.css';
 import {
-  api, clearSession, downloadPdf, getName, getRole, getToken, monthLabel,
-  MONTHS, rupees, setSession,
+  api, clearSession, downloadPdf, fetchBlobUrl, getName, getRole, getToken,
+  monthLabel, MONTHS, rupees, setSession, uploadFile,
 } from './api.js';
 
 const app = document.getElementById('app');
@@ -28,6 +28,7 @@ function nav(active) {
   if (!isAdmin()) {
     return `<div class="bottomnav">
       ${item('#/', '📄', 'My Bills', 'bills')}
+      ${item('#/readings', '📟', 'Meter', 'meter')}
       ${item('#/profile', '👤', 'Profile', 'profile')}
     </div>`;
   }
@@ -133,6 +134,38 @@ async function myBillView(id) {
   document.getElementById('dl').onclick = dl;
 }
 
+async function myReadingsView() {
+  const readings = await api('/tenant/readings');
+  app.innerHTML = `${header('My Meter')}
+  <div class="page">
+    ${readings.length ? readings.map((r) => `
+    <div class="card" data-reading="${r.id}">
+      <div class="section-head">
+        <h2>${MONTHS[r.period_month]} ${r.period_year}</h2>
+        <span class="badge published">${r.reading.toLocaleString('en-IN')} kWh</span>
+      </div>
+      <div class="kv"><span class="k">Reading date</span><span class="v">${r.reading_date}</span></div>
+      ${r.units_consumed !== null ? `<div class="kv"><span class="k">Units consumed</span><span class="v">${r.units_consumed} kWh</span></div>` : ''}
+      ${r.note ? `<div class="kv"><span class="k">Note</span><span class="v">${esc(r.note)}</span></div>` : ''}
+      <div class="gallery">${r.photos.length ? '' : '<p class="note">No meter photo for this month.</p>'}</div>
+    </div>`).join('')
+    : '<div class="card"><p class="note">No meter readings recorded for your floor yet.</p></div>'}
+    <p class="note">Photos are taken by the building staff when the meter is read — your proof of consumption.</p>
+  </div>${nav('meter')}`;
+  for (const r of readings) {
+    const gallery = document.querySelector(`[data-reading="${r.id}"] .gallery`);
+    for (const p of r.photos) {
+      const img = document.createElement('img');
+      img.style.cssText = 'max-width:100%;border-radius:14px;margin-top:8px';
+      img.alt = 'meter photo';
+      gallery.appendChild(img);
+      fetchBlobUrl(`/tenant/readings/${r.id}/photos/${p.id}`)
+        .then((url) => { img.src = url; })
+        .catch(() => { img.alt = 'failed to load photo'; });
+    }
+  }
+}
+
 async function profileView() {
   const me = await api('/tenant/me');
   let unit = null;
@@ -216,6 +249,7 @@ async function metersView() {
           <div class="right">
             <div class="big">${r ? `${r.reading.toLocaleString('en-IN')} kWh` : '—'}</div>
             ${delta !== null ? `<div class="delta">↑ ${delta} units</div>` : `<div class="sub">no reading</div>`}
+            ${r ? `<button class="link" onclick="event.stopPropagation();location.hash='#/reading-photos?reading=${r.id}'">📷 ${r.photos.length}</button>` : ''}
           </div>
         </div>`;
       }).join('') || '<p class="note">No floors assigned to you yet.</p>'}
@@ -242,19 +276,68 @@ async function addReadingView(params) {
     <label class="field">Current reading (kWh)<input id="reading" type="number" min="0" inputmode="numeric"></label>
     <label class="field">Reading date<input id="rdate" type="date" value="${today}"></label>
     <label class="field">Notes (optional)<input id="note" placeholder="Add any notes..."></label>
+    <label class="field">Photo of meter (optional)
+      <input id="photo" type="file" accept="image/jpeg,image/png,image/webp,image/heic" capture="environment"></label>
     <div id="err"></div>
     <button class="btn" id="save">✓ Save Reading</button>
+    <p class="note" style="margin-top:10px">The photo is stored as evidence beside the typed number and is visible to the floor's tenant.</p>
   </div></div>${nav('meters')}`;
   document.getElementById('save').onclick = async () => {
     try {
-      await api('/readings', { method: 'POST', body: {
+      const saved = await api('/readings', { method: 'POST', body: {
         unit_id: +document.getElementById('unit').value,
         period_id: +document.getElementById('period').value,
         reading: +document.getElementById('reading').value,
         reading_date: document.getElementById('rdate').value,
         note: document.getElementById('note').value,
       } });
+      const file = document.getElementById('photo').files[0];
+      if (file) await uploadFile(`/readings/${saved.id}/photos`, file);
       location.hash = '#/meters';
+    } catch (e) {
+      document.getElementById('err').innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    }
+  };
+}
+
+async function readingPhotosView(params) {
+  const readingId = +params.get('reading');
+  const photos = await api(`/readings/${readingId}/photos`);
+  app.innerHTML = `${header('Meter Photos', '#/meters')}
+  <div class="page">
+    <div class="card">
+      <h2>Photos for this reading</h2>
+      <div id="gallery">${photos.length ? '' : '<p class="note">No photos yet.</p>'}</div>
+      <label class="field" style="margin-top:12px">Add photo
+        <input id="photo" type="file" accept="image/jpeg,image/png,image/webp,image/heic" capture="environment"></label>
+      <div id="err"></div>
+      <button class="btn" id="upload">Upload Photo</button>
+    </div>
+  </div>${nav('meters')}`;
+  const gallery = document.getElementById('gallery');
+  for (const p of photos) {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:12px;text-align:center';
+    wrap.innerHTML = `<img style="max-width:100%;border-radius:14px" alt="meter photo">
+      <div class="sub" style="color:var(--muted)">${new Date(p.uploaded_at).toLocaleString()}
+        · ${(p.byte_size / 1024).toFixed(0)} KB
+        <button class="link" data-del="${p.id}">Delete</button></div>`;
+    gallery.appendChild(wrap);
+    fetchBlobUrl(`/readings/${readingId}/photos/${p.id}`)
+      .then((url) => { wrap.querySelector('img').src = url; })
+      .catch(() => { wrap.querySelector('img').alt = 'failed to load'; });
+    wrap.querySelector('[data-del]').addEventListener('click', async () => {
+      if (!confirm('Delete this photo?')) return;
+      await api(`/readings/${readingId}/photos/${p.id}`, { method: 'DELETE' });
+      readingPhotosView(params);
+    });
+  }
+  document.getElementById('upload').onclick = async () => {
+    const file = document.getElementById('photo').files[0];
+    if (!file) return;
+    try {
+      await uploadFile(`/readings/${readingId}/photos`, file);
+      readingPhotosView(params);
     } catch (e) {
       document.getElementById('err').innerHTML = `<div class="error">${esc(e.message)}</div>`;
     }
@@ -263,8 +346,10 @@ async function addReadingView(params) {
 
 async function generateView() {
   await loadPeriods();
-  const templates = await api('/charge-templates');
+  const units = await api('/units');
   const p = currentPeriod();
+  const defaultsByUnit = await Promise.all(units.map((u) =>
+    api(`/units/${u.id}/charge-defaults`)));
   app.innerHTML = `${header('Generate Bills', '#/')}
   <div class="page">
     ${periodTabs()}
@@ -274,13 +359,16 @@ async function generateView() {
         set by the Superuser</div>
     </div>
     <div class="card">
-      <h2>Include in Bill</h2>
-      ${templates.filter((t) => t.is_active).map((t) => `
-        <div class="checkrow">
-          <input type="checkbox" checked data-tpl="${t.id}">
-          <span class="lbl">${esc(t.label)}</span>
-          <input type="number" min="0" value="${t.default_amount_paise / 100}" data-amt="${t.id}">
-        </div>`).join('')}
+      <h2>Floor-wise Fixed Charges</h2>
+      <div class="sub" style="color:var(--muted);margin-bottom:8px">
+        Each floor is seeded from its own charges, configured by the Superuser.
+        Per-bill tweaks: open the draft after generating.</div>
+      ${units.map((u, i) => {
+        const total = defaultsByUnit[i].filter((d) => d.is_active)
+          .reduce((s, d) => s + d.default_amount_paise, 0);
+        return `<div class="kv"><span class="k">${esc(u.name)}</span>
+          <span class="v">${rupees(total)}</span></div>`;
+      }).join('')}
     </div>
     <div id="err"></div>
     <button class="btn" id="gen">Generate Bills</button>
@@ -289,13 +377,8 @@ async function generateView() {
   bindPeriodTabs(generateView);
   document.getElementById('gen').onclick = async () => {
     try {
-      const lines = templates.filter((t) =>
-        document.querySelector(`[data-tpl="${t.id}"]`)?.checked)
-        .map((t) => ({ label: t.label,
-          amount_paise: Math.round(+document.querySelector(`[data-amt="${t.id}"]`).value * 100) }))
-        .filter((l) => l.amount_paise > 0);
       await api(`/periods/${state.periodId}/generate-bills`,
-        { method: 'POST', body: { charge_lines: lines } });
+        { method: 'POST', body: {} });
       location.hash = '#/bills';
     } catch (e) {
       document.getElementById('err').innerHTML = `<div class="error">${esc(e.message)}</div>`;
@@ -452,6 +535,7 @@ const adminRoutes = [
   [/^#\/meters$/, metersView],
   [/^#\/add-reading/, (m, params) => addReadingView(params)],
   [/^#\/generate$/, generateView],
+  [/^#\/reading-photos/, (m, params) => readingPhotosView(params)],
   [/^#\/bills$/, billsView],
   [/^#\/staff-bill\/(\d+)$/, (m) => staffBillView(+m[1])],
   [/^#\/tenants$/, tenantsView],
@@ -460,6 +544,7 @@ const adminRoutes = [
 const tenantRoutes = [
   [/^#\/?$/, myBillsView],
   [/^#\/bill\/(\d+)$/, (m) => myBillView(+m[1])],
+  [/^#\/readings$/, myReadingsView],
   [/^#\/profile$/, profileView],
 ];
 

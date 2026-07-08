@@ -29,7 +29,7 @@ def test_superuser_generates_all_and_anchor_total(client, seed):
     assert mohit["own_units"] == 664
     assert mohit["common_share_units"] == 75
     assert mohit["electricity_paise"] == 665_100
-    # templates: 41600 + 1200 + 636 + 98 = 43_534_00 -> total ₹50,185
+    # 4th-floor defaults: 41600 + 1200 + 636 + 98 = 43_534_00 -> total ₹50,185
     assert mohit["total_paise"] == 5_018_500
     # EV goes 100% to the 3rd floor
     amit = by_unit[seed["units"]["u3"]]

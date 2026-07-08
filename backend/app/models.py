@@ -2,8 +2,8 @@ import enum
 from datetime import datetime, date
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, Enum, ForeignKey, Integer, String,
-    UniqueConstraint,
+    Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, String,
+    UniqueConstraint, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,6 +23,19 @@ class BillStatus(str, enum.Enum):
 
 class User(Base):
     __tablename__ = "users"
+    # Hard guarantee for "one ACTIVE tenant per floor" — the app guard in
+    # routers/users.py returns the friendly 409; this holds under races.
+    __table_args__ = (
+        Index(
+            "uq_active_tenant_per_unit",
+            "unit_id",
+            unique=True,
+            sqlite_where=text(
+                "role = 'tenant' AND is_active = 1 AND unit_id IS NOT NULL"),
+            postgresql_where=text(
+                "role = 'tenant' AND is_active AND unit_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
@@ -69,6 +82,25 @@ class Unit(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     tenants: Mapped[list[User]] = relationship(back_populates="unit")
+    charge_defaults: Mapped[list["UnitChargeDefault"]] = relationship(
+        back_populates="unit", cascade="all, delete-orphan"
+    )
+
+
+class UnitChargeDefault(Base):
+    """Per-floor fixed-charge defaults (rent, water, ...). Superuser-managed;
+    these seed each floor's draft bills instead of one building-wide amount.
+    Amounts stay editable per bill afterwards — these are just the defaults."""
+    __tablename__ = "unit_charge_defaults"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    unit_id: Mapped[int] = mapped_column(ForeignKey("units.id"))
+    label: Mapped[str] = mapped_column(String(200))
+    default_amount_paise: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    unit: Mapped[Unit] = relationship(back_populates="charge_defaults")
 
 
 class BillingPeriod(Base):
@@ -98,6 +130,27 @@ class MeterReading(Base):
 
     unit: Mapped[Unit] = relationship()
     period: Mapped[BillingPeriod] = relationship()
+    photos: Mapped[list["ReadingPhoto"]] = relationship(
+        back_populates="reading", cascade="all, delete-orphan"
+    )
+
+
+class ReadingPhoto(Base):
+    """Meter photo attached to a reading — the evidence beside the typed
+    number. Bytes live behind the Storage abstraction; this row is metadata.
+    No OCR yet (Phase 2) — the reading value is still entered manually."""
+    __tablename__ = "reading_photos"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reading_id: Mapped[int] = mapped_column(
+        ForeignKey("meter_readings.id", ondelete="CASCADE"))
+    storage_key: Mapped[str] = mapped_column(String(500))
+    content_type: Mapped[str] = mapped_column(String(100))
+    byte_size: Mapped[int] = mapped_column(Integer, default=0)
+    uploaded_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    reading: Mapped[MeterReading] = relationship(back_populates="photos")
 
 
 class Bill(Base):

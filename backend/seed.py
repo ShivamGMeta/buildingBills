@@ -13,7 +13,7 @@ from datetime import date
 
 from app.database import Base, SessionLocal, engine
 from app.models import (AdminScope, BillingPeriod, ChargeTemplate,
-                        MeterReading, Role, Unit, User)
+                        MeterReading, Role, Unit, UnitChargeDefault, User)
 from app.security import hash_password
 from app.services import bill_service
 
@@ -71,8 +71,23 @@ def main():
         db.add(MeterReading(unit_id=unit.id, period_id=may.id, reading=r,
                             reading_date=date(2025, 5, 31)))
 
+    # Fixed charges are FLOOR-WISE (every floor has its own rent). The 4th
+    # floor's rows must stay exactly these amounts — they are part of the
+    # ₹50,185 regression anchor.
+    rents = {u4.id: 41_600_00, u3.id: 38_500_00, u2.id: 36_000_00, u1.id: 33_000_00}
+    for unit in units:
+        db.add_all([
+            UnitChargeDefault(unit_id=unit.id, label="Rent",
+                              default_amount_paise=rents[unit.id], sort_order=1),
+            UnitChargeDefault(unit_id=unit.id, label="Water Charges",
+                              default_amount_paise=1_200_00, sort_order=2),
+            UnitChargeDefault(unit_id=unit.id, label="Society Maintenance",
+                              default_amount_paise=636_00, sort_order=3),
+            UnitChargeDefault(unit_id=unit.id, label="DG Backup",
+                              default_amount_paise=98_00, sort_order=4),
+        ])
+    # Templates remain only as a bulk-apply convenience for new labels.
     db.add_all([
-        ChargeTemplate(label="Rent", default_amount_paise=41_600_00),
         ChargeTemplate(label="Water Charges", default_amount_paise=1_200_00),
         ChargeTemplate(label="Society Maintenance", default_amount_paise=636_00),
         ChargeTemplate(label="DG Backup", default_amount_paise=98_00),

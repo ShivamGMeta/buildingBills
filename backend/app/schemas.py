@@ -103,6 +103,30 @@ class UnitUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class ChargeDefaultOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    unit_id: int
+    label: str
+    default_amount_paise: int
+    is_active: bool
+    sort_order: int
+
+
+class ChargeDefaultIn(BaseModel):
+    label: str
+    default_amount_paise: int = Field(ge=0)
+    is_active: bool = True
+    sort_order: int = 0
+
+
+class ChargeDefaultUpdate(BaseModel):
+    label: str | None = None
+    default_amount_paise: int | None = Field(default=None, ge=0)
+    is_active: bool | None = None
+    sort_order: int | None = None
+
+
 class PeriodOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -124,6 +148,15 @@ class PeriodUpdate(BaseModel):
     ev_units: int | None = Field(default=None, ge=0)
 
 
+class ReadingPhotoOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    reading_id: int
+    content_type: str
+    byte_size: int
+    uploaded_at: datetime
+
+
 class ReadingOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -132,6 +165,15 @@ class ReadingOut(BaseModel):
     reading: int
     reading_date: date
     note: str
+    photos: list[ReadingPhotoOut] = []
+
+
+class TenantReadingOut(ReadingOut):
+    """Tenant read surface: own unit's readings with period info and the
+    consumption already computed server-side."""
+    period_year: int
+    period_month: int
+    units_consumed: int | None
 
 
 class ReadingCreate(BaseModel):

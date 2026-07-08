@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from ..models import (Bill, BillingPeriod, BillStatus, ChargeLine,
-                      ChargeTemplate, MeterReading, Role, Unit, User)
+                      MeterReading, Role, Unit, UnitChargeDefault, User)
 from . import billing
 from .notifier import notify_bill_published_safe
 from .pdf import period_label, render_bill_pdf, rupees
@@ -69,10 +69,19 @@ def compute_for_unit(db: Session, unit: Unit, period: BillingPeriod) -> billing.
         raise HTTPException(422, f"{unit.name}: {e}") from e
 
 
-def default_charge_lines(db: Session) -> list[ChargeLine]:
-    templates = db.query(ChargeTemplate).filter(ChargeTemplate.is_active).all()
-    return [ChargeLine(label=t.label, amount_paise=t.default_amount_paise)
-            for t in templates]
+def default_charge_lines(db: Session, unit: Unit) -> list[ChargeLine]:
+    """Fixed charges are floor-wise: each unit's active UnitChargeDefault
+    rows (superuser-managed) seed its draft. Building-wide ChargeTemplates
+    are only a bulk-apply convenience and never override per-floor values.
+    A unit with no defaults gets an electricity-only draft."""
+    defaults = (
+        db.query(UnitChargeDefault)
+        .filter(UnitChargeDefault.unit_id == unit.id, UnitChargeDefault.is_active)
+        .order_by(UnitChargeDefault.sort_order, UnitChargeDefault.id)
+        .all()
+    )
+    return [ChargeLine(label=d.label, amount_paise=d.default_amount_paise)
+            for d in defaults]
 
 
 def generate_drafts(db: Session, period: BillingPeriod, unit_ids: set[int] | None,
@@ -98,7 +107,7 @@ def generate_drafts(db: Session, period: BillingPeriod, unit_ids: set[int] | Non
                 lines = [ChargeLine(label=l.label, amount_paise=l.amount_paise)
                          for l in extra_lines]
             else:
-                lines = default_charge_lines(db)
+                lines = default_charge_lines(db, unit)
             existing = Bill(unit_id=unit.id, period_id=period.id,
                             charge_lines=lines)
             _apply_calc(existing, calc)
