@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+backend/buildingbills.db
+backend/storage/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+
+# Env & editor
+.env
+.DS_Store
+
+# lockfiles (re-generate with npm install)
+frontend-*/package-lock.json
