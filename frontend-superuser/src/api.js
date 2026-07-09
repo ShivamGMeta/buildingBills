@@ -71,3 +71,30 @@ export function rupees(paise) {
   }
   return (paise < 0 ? '-' : '') + '₹' + s + (p ? '.' + String(p).padStart(2, '0') : '');
 }
+
+export async function uploadFile(path, file, fieldName = 'photo') {
+  const form = new FormData();
+  form.append(fieldName, file);
+  const res = await fetch(BASE + path, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${getToken()}` },
+    body: form,
+  });
+  if (!res.ok) {
+    let msg = `${res.status}`;
+    try {
+      const data = await res.json();
+      msg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+    } catch { /* keep status code */ }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+export async function fetchBlobUrl(path) {
+  const res = await fetch(BASE + path, {
+    headers: { Authorization: `Bearer ${getToken()}` },
+  });
+  if (!res.ok) throw new Error(`Failed to load image (${res.status})`);
+  return URL.createObjectURL(await res.blob());
+}

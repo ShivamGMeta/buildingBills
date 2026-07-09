@@ -58,6 +58,29 @@ reproduce this exactly — both as a pure function and end-to-end via the API.
   latest period; only the Superuser can change a rate.
 - "Mark as paid" (from the mock) is on staff bills as a toggle + `paid_at`.
 
+## Gap-analysis build (docs/02-gap-analysis.md — decisions confirmed by owner)
+
+- **One ACTIVE tenant per floor**: 409 guard in `routers/users.py`
+  (`_assert_floor_free`) + partial unique index `uq_active_tenant_per_unit`.
+  Deactivated tenants stay on the unit as history.
+- **Fixed charges are FLOOR-WISE**: `UnitChargeDefault` rows (superuser-writes,
+  staff-reads) seed each floor's drafts via `default_charge_lines(db, unit)`.
+  `ChargeTemplate` is only a bulk "apply to all floors" convenience — it never
+  overrides per-floor values at bill time. 4th-floor defaults are part of the
+  ₹50,185 anchor.
+- **Meter photos** (`ReadingPhoto` + scoped endpoints): staff upload/view/delete
+  within floor scope; tenants get a read-only surface (`/api/tenant/readings`)
+  showing **all months of their own unit** (owner chose transparency over
+  publish-gating). JPEG/PNG/WebP/HEIC, ≤10 MB; bytes always streamed through
+  the API — storage links never exposed. No OCR yet (Phase 2).
+- **Storage**: `local` backend now; interface extended (content_type, delete)
+  so a `GoogleDriveStorage` (owner-account OAuth — service accounts can't use
+  the personal 2 TB) can be added via `settings.storage_backend` without
+  touching endpoints. Database stays relational (Postgres for hosting);
+  MongoDB/Drive-as-DB were evaluated and rejected — see docs/02 §2.
+- **Alembic** is set up (`backend/alembic/`); dev still uses `create_all`,
+  real deployments run `alembic upgrade head`.
+
 ## Dev workflow
 
 ```bash

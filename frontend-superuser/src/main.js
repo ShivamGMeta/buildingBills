@@ -1,6 +1,7 @@
 import './style.css';
 import {
-  api, clearSession, downloadPdf, getName, getToken, monthLabel, rupees, setSession,
+  api, clearSession, downloadPdf, fetchBlobUrl, getName, getToken, monthLabel,
+  rupees, setSession, uploadFile,
 } from './api.js';
 
 const app = document.getElementById('app');
@@ -160,6 +161,7 @@ async function metersView() {
           <div class="right">
             <div class="big">${r ? `${r.reading.toLocaleString('en-IN')} kWh` : '—'}</div>
             ${delta !== null ? `<div class="delta">↑ ${delta} units</div>` : `<div class="sub">no reading</div>`}
+            ${r ? `<button class="link" onclick="event.stopPropagation();location.hash='#/reading-photos?reading=${r.id}'">📷 ${r.photos.length}</button>` : ''}
           </div>
         </div>`;
       }).join('')}
@@ -193,19 +195,23 @@ async function addReadingView(params) {
     <label class="field">Current reading (kWh)<input id="reading" type="number" min="0" inputmode="numeric"></label>
     <label class="field">Reading date<input id="rdate" type="date" value="${today}"></label>
     <label class="field">Notes (optional)<input id="note" placeholder="Add any notes..."></label>
+    <label class="field">Photo of meter (optional)
+      <input id="photo" type="file" accept="image/jpeg,image/png,image/webp,image/heic" capture="environment"></label>
     <div id="err"></div>
     <button class="btn" id="save">✓ Save Reading</button>
-    <p class="note" style="margin-top:10px">Phase 2 will read the meter photo automatically — manual entry always stays available.</p>
+    <p class="note" style="margin-top:10px">The photo is stored as evidence beside the typed number and is visible to the floor's tenant. Phase 2 will read it automatically.</p>
   </div></div>${nav('meters')}`;
   document.getElementById('save').onclick = async () => {
     try {
-      await api('/readings', { method: 'POST', body: {
+      const saved = await api('/readings', { method: 'POST', body: {
         unit_id: +document.getElementById('unit').value,
         period_id: +document.getElementById('period').value,
         reading: +document.getElementById('reading').value,
         reading_date: document.getElementById('rdate').value,
         note: document.getElementById('note').value,
       } });
+      const file = document.getElementById('photo').files[0];
+      if (file) await uploadFile(`/readings/${saved.id}/photos`, file);
       location.hash = '#/meters';
     } catch (e) {
       document.getElementById('err').innerHTML = `<div class="error">${esc(e.message)}</div>`;
@@ -215,8 +221,10 @@ async function addReadingView(params) {
 
 async function generateView() {
   await loadPeriods();
-  const templates = await api('/charge-templates');
+  state.units = await api('/units');
   const p = currentPeriod();
+  const defaultsByUnit = await Promise.all(state.units.map((u) =>
+    api(`/units/${u.id}/charge-defaults`)));
   app.innerHTML = `${header('Generate Bills', '#/')}
   <div class="page">
     ${periodTabs()}
@@ -228,16 +236,17 @@ async function generateView() {
       </div>
     </div>
     <div class="card">
-      <h2>Include in Bill</h2>
+      <div class="section-head"><h2>Floor-wise Fixed Charges</h2>
+        <button class="link" onclick="location.hash='#/floor-charges'">Edit →</button></div>
       <div class="sub" style="color:var(--muted);margin-bottom:8px">
-        Defaults come from charge templates; amounts apply to every bill this run.
-        Per-flat tweaks: open the draft bill after generating.</div>
-      ${templates.filter((t) => t.is_active).map((t) => `
-        <div class="checkrow">
-          <input type="checkbox" checked data-tpl="${t.id}">
-          <span class="lbl">${esc(t.label)}</span>
-          <input type="number" min="0" value="${t.default_amount_paise / 100}" data-amt="${t.id}">
-        </div>`).join('')}
+        Every floor is seeded from its own configured charges. Per-bill tweaks:
+        open the draft after generating.</div>
+      ${state.units.map((u, i) => {
+        const total = defaultsByUnit[i].filter((d) => d.is_active)
+          .reduce((s, d) => s + d.default_amount_paise, 0);
+        return `<div class="kv"><span class="k">${esc(u.name)}</span>
+          <span class="v">${rupees(total)}</span></div>`;
+      }).join('')}
     </div>
     <div id="err"></div>
     <button class="btn" id="gen">Generate Bills</button>
@@ -255,14 +264,118 @@ async function generateView() {
   };
   document.getElementById('gen').onclick = async () => {
     try {
-      const lines = templates.filter((t) =>
-        document.querySelector(`[data-tpl="${t.id}"]`)?.checked)
-        .map((t) => ({ label: t.label,
-          amount_paise: Math.round(+document.querySelector(`[data-amt="${t.id}"]`).value * 100) }))
-        .filter((l) => l.amount_paise > 0);
       await api(`/periods/${state.periodId}/generate-bills`,
-        { method: 'POST', body: { charge_lines: lines } });
+        { method: 'POST', body: {} });
       location.hash = '#/bills';
+    } catch (e) {
+      document.getElementById('err').innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    }
+  };
+}
+
+async function floorChargesView(params) {
+  state.units = await api('/units');
+  const unitId = +params.get('unit') || state.units[0]?.id;
+  const rows = await api(`/units/${unitId}/charge-defaults`);
+  app.innerHTML = `${header('Floor Charges', '#/more')}
+  <div class="page">
+    <div class="pill-tabs">${state.units.map((u) =>
+      `<button class="pill ${u.id === unitId ? 'active' : ''}" data-floor="${u.id}">${esc(u.name)}</button>`).join('')}
+    </div>
+    <div class="card">
+      <h2>Fixed charges for ${esc(state.units.find((u) => u.id === unitId)?.name || '')}</h2>
+      <div class="sub" style="color:var(--muted);margin-bottom:8px">
+        These seed every new draft bill for this floor. Amounts in ₹.</div>
+      ${rows.length ? rows.map((r) => `
+        <div class="checkrow" data-cd="${r.id}">
+          <input type="checkbox" ${r.is_active ? 'checked' : ''} data-cd-active="${r.id}">
+          <span class="lbl">${esc(r.label)}</span>
+          <input type="number" min="0" step="0.01" value="${r.default_amount_paise / 100}" data-cd-amt="${r.id}">
+          <button class="link" data-cd-del="${r.id}">✕</button>
+        </div>`).join('') : '<p class="note">No charges configured for this floor yet.</p>'}
+      <div class="row" style="margin-top:12px">
+        <input id="new-label" placeholder="New charge label">
+        <input id="new-amt" type="number" min="0" step="0.01" placeholder="₹" style="width:110px">
+      </div>
+      <div id="err"></div>
+      <button class="btn" id="save" style="margin-top:12px">Save Floor Charges</button>
+      <p class="note">Changing these affects future drafts only — existing bills keep their lines.</p>
+    </div>
+  </div>${nav('more')}`;
+  document.querySelectorAll('[data-floor]').forEach((el) =>
+    el.addEventListener('click', () => {
+      location.hash = `#/floor-charges?unit=${el.dataset.floor}`;
+    }));
+  document.querySelectorAll('[data-cd-del]').forEach((el) =>
+    el.addEventListener('click', async () => {
+      if (!confirm('Remove this charge from the floor?')) return;
+      try {
+        await api(`/units/${unitId}/charge-defaults/${el.dataset.cdDel}`,
+          { method: 'DELETE' });
+        floorChargesView(params);
+      } catch (e) { alert(e.message); }
+    }));
+  document.getElementById('save').onclick = async () => {
+    try {
+      for (const r of rows) {
+        const amt = Math.round(+document.querySelector(`[data-cd-amt="${r.id}"]`).value * 100);
+        const active = document.querySelector(`[data-cd-active="${r.id}"]`).checked;
+        if (amt !== r.default_amount_paise || active !== r.is_active) {
+          await api(`/units/${unitId}/charge-defaults/${r.id}`, {
+            method: 'PATCH', body: { default_amount_paise: amt, is_active: active } });
+        }
+      }
+      const label = document.getElementById('new-label').value.trim();
+      if (label) {
+        await api(`/units/${unitId}/charge-defaults`, { method: 'POST', body: {
+          label, default_amount_paise: Math.round(+document.getElementById('new-amt').value * 100 || 0),
+          sort_order: rows.length + 1 } });
+      }
+      floorChargesView(params);
+    } catch (e) {
+      document.getElementById('err').innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    }
+  };
+}
+
+async function readingPhotosView(params) {
+  const readingId = +params.get('reading');
+  const photos = await api(`/readings/${readingId}/photos`);
+  app.innerHTML = `${header('Meter Photos', '#/meters')}
+  <div class="page">
+    <div class="card">
+      <h2>Photos for this reading</h2>
+      <div id="gallery">${photos.length ? '' : '<p class="note">No photos yet.</p>'}</div>
+      <label class="field" style="margin-top:12px">Add photo
+        <input id="photo" type="file" accept="image/jpeg,image/png,image/webp,image/heic"></label>
+      <div id="err"></div>
+      <button class="btn" id="upload">Upload Photo</button>
+    </div>
+  </div>${nav('meters')}`;
+  const gallery = document.getElementById('gallery');
+  for (const p of photos) {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:12px;text-align:center';
+    wrap.innerHTML = `<img style="max-width:100%;border-radius:14px" alt="meter photo">
+      <div class="sub" style="color:var(--muted)">${new Date(p.uploaded_at).toLocaleString()}
+        · ${(p.byte_size / 1024).toFixed(0)} KB
+        <button class="link" data-del="${p.id}">Delete</button></div>`;
+    gallery.appendChild(wrap);
+    fetchBlobUrl(`/readings/${readingId}/photos/${p.id}`)
+      .then((url) => { wrap.querySelector('img').src = url; })
+      .catch(() => { wrap.querySelector('img').alt = 'failed to load'; });
+    wrap.querySelector('[data-del]').addEventListener('click', async () => {
+      if (!confirm('Delete this photo?')) return;
+      await api(`/readings/${readingId}/photos/${p.id}`, { method: 'DELETE' });
+      readingPhotosView(params);
+    });
+  }
+  document.getElementById('upload').onclick = async () => {
+    const file = document.getElementById('photo').files[0];
+    if (!file) return;
+    try {
+      await uploadFile(`/readings/${readingId}/photos`, file);
+      readingPhotosView(params);
     } catch (e) {
       document.getElementById('err').innerHTML = `<div class="error">${esc(e.message)}</div>`;
     }
@@ -500,11 +613,15 @@ async function settingsView() {
     </div>
     <div class="card">
       <h2>Charge Templates</h2>
+      <div class="sub" style="color:var(--muted);margin-bottom:8px">
+        Bulk convenience only — bills are seeded from each floor's own charges
+        (Floor Charges screen). “Apply” copies a template onto every floor.</div>
       ${templates.map((t) => `
         <div class="checkrow">
           <input type="checkbox" ${t.is_active ? 'checked' : ''} data-tact="${t.id}">
           <span class="lbl">${esc(t.label)}</span>
           <input type="number" min="0" value="${t.default_amount_paise / 100}" data-tamt="${t.id}">
+          <button class="link" data-apply="${t.id}">Apply</button>
         </div>`).join('')}
       <div class="row" style="margin-top:10px">
         <input id="new-label" placeholder="New charge label">
@@ -535,6 +652,15 @@ async function settingsView() {
       settingsView();
     } catch (e) { alert(e.message); }
   };
+  document.querySelectorAll('[data-apply]').forEach((el) =>
+    el.addEventListener('click', async () => {
+      if (!confirm('Copy this template onto every floor\'s charges?')) return;
+      try {
+        await api(`/charge-templates/${el.dataset.apply}/apply-to-floors`,
+          { method: 'POST' });
+        alert('Applied to all floors — review in Floor Charges.');
+      } catch (e) { alert(e.message); }
+    }));
   document.getElementById('save-templates').onclick = async () => {
     try {
       for (const t of templates) {
@@ -562,6 +688,8 @@ async function moreView() {
       <div class="icon">🧑‍💼</div><div class="title">Manage Admins</div><div class="right">›</div></div>
     <div class="list-row" onclick="location.hash='#/tenants'">
       <div class="icon">👥</div><div class="title">Manage Tenants</div><div class="right">›</div></div>
+    <div class="list-row" onclick="location.hash='#/floor-charges'">
+      <div class="icon">🏷️</div><div class="title">Floor Charges (rent, water…)</div><div class="right">›</div></div>
     <div class="list-row" onclick="location.hash='#/settings'">
       <div class="icon">⚙️</div><div class="title">Building Settings</div><div class="right">›</div></div>
     <div class="list-row" id="logout">
@@ -577,6 +705,8 @@ const routes = [
   [/^#\/meters$/, metersView],
   [/^#\/add-reading/, (m, params) => addReadingView(params)],
   [/^#\/generate$/, generateView],
+  [/^#\/floor-charges/, (m, params) => floorChargesView(params)],
+  [/^#\/reading-photos/, (m, params) => readingPhotosView(params)],
   [/^#\/bills$/, billsView],
   [/^#\/bill\/(\d+)$/, (m) => billView(+m[1])],
   [/^#\/admins$/, adminsView],
